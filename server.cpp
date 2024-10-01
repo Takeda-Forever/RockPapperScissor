@@ -13,9 +13,7 @@
 #include <mutex>
 #include <string>
 
-std::mutex mtx;
 std::unordered_map<int, SOCKET> clients;
-
 SOCKET server_socket;
 
 void ServerHandle();
