@@ -15,9 +15,17 @@
 
 std::unordered_map<int, SOCKET> clients;
 SOCKET server_socket;
+std::mutex clients_mutex;
 
 void ServerHandle();
 void ClientHandle(int);
+
+//Create the function for using them. Example as follows:
+//      - /send_message_to_client 1 "Hello, client!"
+//      - /disconnect_client 1
+//      - /get_clients_count
+//      - /get_client_socket 1
+
 
 int main()
 {
@@ -62,49 +70,75 @@ int main()
 
 void ClientHandle(int index)
 {
-    char msg[256];
-    while (1)
-    {
-        for (int i = 0; i < clients.size(); i++) 
-        {
-            int bytesReceived = recv(clients[index], msg, sizeof(msg), 0);
-            if (bytesReceived <= 0) {
-                std::cout << "Client " << index << " disconnected or error occurred." << std::endl;
-                closesocket(clients[index]);
-                clients.erase(index);
-                return;
-            }
+    int msg_size;
 
-            msg[bytesReceived] = '\0'; 
-            std::cout << "Received from " << index << ": " << msg << std::endl;
-            if(clients.size() == 0)
-                return;
-                
-            if (i != index) {
-                std::string fullMessage = "Player "+std::to_string(index) + ": " + msg;
-                send(clients[i], fullMessage.c_str(), fullMessage.size(), 0);
+    while (true)
+    {
+        int bytesReceived = recv(clients[index], (char*)&msg_size, sizeof(int), 0);
+        if (bytesReceived <= 0)
+        {
+            std::cerr << "Client " << index << " disconnected or error occurred." << std::endl;
+            closesocket(clients[index]);
+
+
+            std::lock_guard<std::mutex> guard(clients_mutex);
+            clients.erase(index);
+            return;
+        }
+
+
+        char* msg = new char[msg_size + 1];
+        bytesReceived = recv(clients[index], msg, msg_size, 0);
+        if (bytesReceived <= 0)
+        {
+            std::cerr << "Error receiving message from client " << index << std::endl;
+            delete[] msg;
+            continue;
+        }
+
+        msg[bytesReceived] = '\0';  
+        std::string message = "Player " + std::to_string(index) + ": " + msg;
+
+        std::cout << message << std::endl;
+
+
+        std::lock_guard<std::mutex> guard(clients_mutex);
+        for (auto& client : clients)
+        {
+            if (client.first != index)  
+            {
+                int msg_len = message.size();
+                send(client.second, (char*)&msg_len, sizeof(int), 0);
+                send(client.second, message.c_str(), msg_len, 0);
             }
         }
+
+        delete[] msg;
     }
-    
 }
+
 void ServerHandle()
 {
     SOCKET client_socket;
     SOCKADDR_IN client_addr;
     int client_addr_size = sizeof(client_addr);
 
-    while (1) 
+    while (true)
     {
         client_socket = accept(server_socket, (sockaddr*)&client_addr, &client_addr_size);
-        
-        if (client_socket == INVALID_SOCKET) 
+        if (client_socket == INVALID_SOCKET)
         {
             std::cerr << "Failed to accept client connection." << std::endl;
             continue;
         }
 
-        clients[clients.size()] = client_socket;
-        std::thread(ClientHandle, (int)clients.size()-1).detach();
+        {
+            std::lock_guard<std::mutex> guard(clients_mutex);
+            int new_client_id = clients.size();
+            clients[new_client_id] = client_socket;
+            std::cout << "New connect: Player " << new_client_id << std::endl;
+
+            std::thread(ClientHandle, new_client_id).detach();
+        }
     }
 }
