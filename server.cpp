@@ -13,7 +13,7 @@
 #include <mutex>
 #include <string>
 
-std::unordered_map<int, SOCKET> clients;
+std::unordered_map<int, std::unique_ptr<SOCKET>> clients;
 SOCKET server_socket;
 std::mutex clients_mutex;
 
@@ -30,11 +30,11 @@ void ClientHandle(int);
 int main()
 {
     WSADATA Wdata;
-        if(WSAStartup(MAKEWORD(2, 2), &Wdata) != NO_ERROR)
-        {
-            std::cerr << "Failed to start WSA" << std::endl;
-            return 1;
-        }
+    if(WSAStartup(MAKEWORD(2, 2), &Wdata) != NO_ERROR)
+    {
+        std::cerr << "Failed to start WSA" << std::endl;
+        return 1;
+    }
 
     SOCKADDR_IN addr;
     addr.sin_family = AF_INET;
@@ -74,46 +74,45 @@ void ClientHandle(int index)
 
     while (true)
     {
-        int bytesReceived = recv(clients[index], (char*)&msg_size, sizeof(int), 0);
+        std::unique_ptr<SOCKET>& client_socket = clients[index];  // Получаем ссылку на умный указатель клиента
+
+        // Прием размера сообщения
+        int bytesReceived = recv(*client_socket, (char*)&msg_size, sizeof(int), 0);  // * для разыменования unique_ptr
         if (bytesReceived <= 0)
         {
             std::cerr << "Client " << index << " disconnected or error occurred." << std::endl;
-            closesocket(clients[index]);
-
 
             std::lock_guard<std::mutex> guard(clients_mutex);
-            clients.erase(index);
+            clients.erase(index);  // Удаляем клиента — сокет закроется автоматически
             return;
         }
 
+        // Создание буфера для сообщения
+        std::string msg(msg_size, '\0');
 
-        char* msg = new char[msg_size + 1];
-        bytesReceived = recv(clients[index], msg, msg_size, 0);
+        // Прием сообщения
+        bytesReceived = recv(*client_socket, &msg[0], msg_size, 0);
         if (bytesReceived <= 0)
         {
             std::cerr << "Error receiving message from client " << index << std::endl;
-            delete[] msg;
             continue;
         }
 
-        msg[bytesReceived] = '\0';  
+        // Формирование сообщения
         std::string message = "Player " + std::to_string(index) + ": " + msg;
-
         std::cout << message << std::endl;
 
-
+        // Отправка сообщения всем остальным клиентам
         std::lock_guard<std::mutex> guard(clients_mutex);
         for (auto& client : clients)
         {
-            if (client.first != index)  
+            if (client.first != index)
             {
-                int msg_len = message.size();
-                send(client.second, (char*)&msg_len, sizeof(int), 0);
-                send(client.second, message.c_str(), msg_len, 0);
+                int msg_len = static_cast<int>(message.size());
+                send(*client.second, (char*)&msg_len, sizeof(int), 0);
+                send(*client.second, message.c_str(), msg_len, 0);
             }
         }
-
-        delete[] msg;
     }
 }
 
@@ -135,9 +134,12 @@ void ServerHandle()
         {
             std::lock_guard<std::mutex> guard(clients_mutex);
             int new_client_id = clients.size();
-            clients[new_client_id] = client_socket;
+
+            // Создаем умный указатель на сокет клиента
+            clients[new_client_id] = std::make_unique<SOCKET>(client_socket);
             std::cout << "New connect: Player " << new_client_id << std::endl;
 
+            // Передаем в поток ID клиента
             std::thread(ClientHandle, new_client_id).detach();
         }
     }
